@@ -1,0 +1,280 @@
+import streamlit as st
+import pandas as pd
+from datetime import timedelta, datetime
+
+# Set page config
+st.set_page_config(page_title="Tip Dashboard", layout="wide")
+
+
+# Helper functions
+@st.cache_data
+def load_data():
+    data = pd.read_csv(
+        "/Users/vinicius/Documents/repository/Repo_2025/data/raw/Tip_data.csv"
+    )
+    data["Date"] = pd.to_datetime(data["Date"])
+    return data
+
+
+def add_new_tip(tip_value, tip_date=None):
+    global df
+    """
+    Adiciona uma nova linha ao DataFrame e opcionalmente salva no CSV.
+    
+    Parameters:
+    - df: pd.DataFrame atual
+    - tip_value: float, valor do tip
+    - tip_date: datetime.date ou str opcional. Se None, usa hoje.
+    - csv_path: str opcional, caminho do CSV para salvar
+    
+    Returns:
+    - df atualizado
+    """
+
+    # 1. Usar today se tip_date não fornecido
+    if tip_date is None:
+        tip_date = datetime.today().date()
+
+    # 2. Converter para pd.Timestamp
+    tip_timestamp = pd.Timestamp(tip_date)
+
+    # 3. Criar dicionário com todos os valores da nova linha (ordem igual ao seu dataset)
+    new_row = {
+        "Tip": tip_value,
+        "Date": tip_timestamp,
+        "Month": tip_timestamp.month,
+        "Day": tip_timestamp.day,
+        "Year": tip_timestamp.year,
+        "Weekday": tip_timestamp.strftime("%A"),  # nome do dia
+    }
+
+    # 4. Converter em DataFrame
+    new_df = pd.DataFrame([new_row])
+
+    # 5. Concatenar ao DataFrame existente
+    df = pd.concat([df, new_df], ignore_index=True)
+
+    # 6. Se csv_path fornecido, salvar no CSV (append)
+    csv_path = "/Users/vinicius/Documents/repository/Repo_2025/data/raw/Tip_data.csv"
+    new_df.to_csv(csv_path, mode="a", header=False, index=False)
+
+    return df
+
+
+def custom_quarter(date):
+    month = date.month
+    year = date.year
+    if month in [2, 3, 4]:
+        return pd.Period(year=year, quarter=1, freq="Q")
+    elif month in [5, 6, 7]:
+        return pd.Period(year=year, quarter=2, freq="Q")
+    elif month in [8, 9, 10]:
+        return pd.Period(year=year, quarter=3, freq="Q")
+    else:  # month in [11, 12, 1]
+        return pd.Period(year=year if month != 1 else year - 1, quarter=4, freq="Q")
+
+
+def aggregate_data(df, freq):
+    if freq == "Q":
+        df = df.copy()
+        df["CUSTOM_Q"] = df["Date"].apply(custom_quarter)
+        df_agg = df.groupby("CUSTOM_Q").agg(
+            {
+                "Tip": "sum",
+            }
+        )
+        return df_agg
+    else:
+        return df.resample(freq, on="Date").agg(
+            {
+                "Tip": "sum",
+            }
+        )
+
+
+# aggregate_data(df,'Q') - Checking if works
+
+
+def get_weekly_data(df):
+    return aggregate_data(df, "W-MON")
+
+
+def get_monthly_data(df):
+    return aggregate_data(df, "M")
+
+
+def get_quarterly_data(df):
+    return aggregate_data(df, "Q")
+
+
+def format_with_commas(number):
+    try:
+        return f"{float(number):,}"
+    except Exception:
+        return str(number)
+
+
+def create_metric_chart(df, column, color, chart_type, height=150, time_frame="Daily"):
+    chart_data = df[[column]].copy()
+    if time_frame == "Quarterly":
+        chart_data.index = chart_data.index.strftime("%Y Q%q ")
+    if chart_type == "Bar":
+        st.bar_chart(chart_data, y=column, color=color, height=height)
+    if chart_type == "Area":
+        st.area_chart(chart_data, y=column, color=color, height=height)
+
+
+def is_period_complete(date, freq):
+    today = datetime.now()
+    if freq == "D":
+        return date.date() < today.date()
+    elif freq == "W":
+        return date + timedelta(days=6) < today
+    elif freq == "M":
+        next_month = date.replace(day=28) + timedelta(days=4)
+        return next_month.replace(day=1) <= today
+    elif freq == "Q":
+        current_quarter = custom_quarter(today)
+        return date < current_quarter
+
+
+def calculate_delta(df, column):
+    if len(df) < 2:
+        return 0, 0
+    current_value = df[column].iloc[-1]
+    previous_value = df[column].iloc[-2]
+    delta = current_value - previous_value
+    delta_percent = (delta / previous_value) * 100 if previous_value != 0 else 0
+    return delta, delta_percent
+
+
+def display_metric(col, title, value, df, column, color, time_frame):
+    with col:
+        with st.container(border=True):
+            delta, delta_percent = calculate_delta(df, column)
+            delta_str = f"{delta:+,.0f} ({delta_percent:+.2f}%)"
+            st.metric(title, format_with_commas(value), delta=delta_str)
+            create_metric_chart(
+                df, column, color, time_frame=time_frame, chart_type=chart_selection
+            )
+
+            last_period = df.index[-1]
+            freq = {"Daily": "D", "Weekly": "W", "Monthly": "M", "Quarterly": "Q"}[
+                time_frame
+            ]
+            if not is_period_complete(last_period, freq):
+                st.caption(
+                    f"Note: The last {time_frame.lower()[:-2] if time_frame != 'Daily' else 'day'} is incomplete."
+                )
+
+
+# Load data
+df = load_data()
+# so far so good
+
+# Set up input widgets
+st.logo(
+    image="/Users/vinicius/Documents/repository/Repo_2025/Images/blacknbluelogo.png",
+    icon_image="/Users/vinicius/Documents/repository/Repo_2025/Images/blacknbluelogo.png",
+)
+
+with st.sidebar:
+    st.title("Dash da Leti")
+    st.header("⚙️ Settings")
+
+    max_date = df["Date"].max().date()
+    default_start_date = max_date - timedelta(days=25)  # Show a year by default
+    default_end_date = max_date
+    start_date = st.date_input(
+        "Start date",
+        default_start_date,
+        min_value=df["Date"].min().date(),
+        max_value=max_date,
+    )
+    end_date = st.date_input(
+        "End date",
+        default_end_date,
+        min_value=df["Date"].min().date(),
+        max_value=max_date,
+    )
+    time_frame = st.selectbox(
+        "Select time frame",
+        ("Daily", "Weekly", "Monthly", "Quarterly"),
+    )
+    chart_selection = st.selectbox("Select a chart type", ("Bar", "Area"))
+
+with st.sidebar:
+    st.markdown("---")
+    st.header("➕ Add New Tip")
+
+    tip_value = st.number_input("Tip amount", min_value=0.0, step=1.00)
+    tip_date = st.date_input("Date (leave empty for today)", value=datetime.today())
+
+    if st.button("Add Tip"):
+        if tip_value > 0:
+            df = add_new_tip(tip_value, tip_date)
+            st.cache_data.clear()
+            st.success(f"Added Tip: ${tip_value:.2f} on {tip_date}")
+            st.rerun()
+        else:
+            st.error("Please enter a tip amount greater than 0")
+
+# Prepare data based on selected time frame
+if time_frame == "Daily":
+    df_display = df.set_index("Date")
+elif time_frame == "Weekly":
+    df_display = get_weekly_data(df)
+elif time_frame == "Monthly":
+    df_display = get_monthly_data(df)
+elif time_frame == "Quarterly":
+    df_display = get_quarterly_data(df)
+
+# Display Key Metrics
+st.subheader("All-Time Statistics")
+
+metrics = [
+    ("Total Tip", "Tip", "#29b5e8"),
+]
+
+
+# cols = st.columns(len(metrics))
+# for col, (title, column, color) in zip(cols, metrics):
+#     total_value = df[column].sum()
+#     display_metric(col, title, total_value, df_display, column, color, time_frame)
+
+# metrics = [
+#     ("Total Tips", df["Tip"].sum(), "#29b5e8"),
+#     ("Average Tip", df["Tip"].mean(), "#FF9F36"),
+# ]
+cols = st.columns(len(metrics))
+for col, (title, value, color) in zip(cols, metrics):
+    display_metric(col, title, value, df_display, "Tip", color, time_frame)
+
+
+st.subheader("Selected Duration")
+
+if time_frame == "Quarterly":
+    start_quarter = custom_quarter(start_date)
+    end_quarter = custom_quarter(end_date)
+    mask = (df_display.index >= start_quarter) & (df_display.index <= end_quarter)
+else:
+    mask = (df_display.index >= pd.Timestamp(start_date)) & (
+        df_display.index <= pd.Timestamp(end_date)
+    )
+df_filtered = df_display.loc[mask]
+
+cols = st.columns(len(metrics))
+for col, (title, column, color) in zip(cols, metrics):
+    display_metric(
+        col,
+        title.split()[-1],
+        df_filtered[column].sum(),
+        df_filtered,
+        column,
+        color,
+        time_frame,
+    )
+
+# DataFrame display
+with st.expander("See DataFrame (Selected time frame)"):
+    st.dataframe(df_filtered)
