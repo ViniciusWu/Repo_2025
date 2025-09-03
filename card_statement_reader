@@ -1,0 +1,48 @@
+import pdfplumber
+import pandas as pd
+import re
+
+path = "/Users/vinicius/Documents/repository/Repo_2025/data/raw/walmart_july.pdf"
+
+all_transactions = []
+
+with pdfplumber.open(path, laparams={"line_overlap": 0.2}) as pdf:
+    for page_num, page in enumerate(pdf.pages, start=1):  # percorre cada página
+        words = page.extract_words()
+
+        # Agrupa palavras por linha (pela posição vertical "top")
+        lines = {}
+        for w in words:
+            line_y = round(w["top"], 1)
+            if line_y not in lines:
+                lines[line_y] = []
+            lines[line_y].append((w["x0"], w["text"]))
+
+        # Ordena linhas de cima para baixo
+        ordered_lines = sorted(lines.items(), key=lambda x: x[0])
+
+        for _, line_words in ordered_lines:
+            # Ordena esquerda → direita
+            line_words = sorted(line_words, key=lambda x: x[0])
+            line_text = " ".join([w[1] for w in line_words])
+
+            # Regex para capturar formato de transação
+            match = re.match(
+                r"(\d+)\s+([A-Za-z]{3}\s+\d{1,2})\s+([A-Za-z]{3}\s+\d{1,2})\s+(.*)\s+(-?\$[\d,]+\.\d{2})",
+                line_text,
+            )
+            if match:
+                all_transactions.append(
+                    {
+                        "Page": page_num,
+                        "ID": match.group(1),
+                        "StartDate": match.group(2),
+                        "EndDate": match.group(3),
+                        "Description": match.group(4),
+                        "Amount": match.group(5),
+                    }
+                )
+
+# Cria DataFrame final
+df = pd.DataFrame(all_transactions)
+print(df)
